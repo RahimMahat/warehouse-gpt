@@ -1,0 +1,244 @@
+# Verified question -> SQL pairs, retrieved as few-shot examples (ablation rung 4).
+# Rules:
+#   * Every query is executed in tests (tests/test_context.py) so none can rot.
+#   * This set is DISJOINT from the eval golden set (evals/golden/*.yml); a test enforces
+#     that no question appears in both, so examples never leak eval answers.
+#   * Prefer patterns (time series, top-N, ratios, joins) over one-off trivia.
+
+queries:
+  - id: vq_revenue_by_month
+    question: What was revenue each month in 2017?
+    tags: [revenue, time-series]
+    sql: |
+      SELECT date_trunc('month', purchased_at) AS month,
+             SUM(items_value) AS revenue
+      FROM marts.fct_orders
+      WHERE NOT is_canceled AND year(purchased_at) = 2017
+      GROUP BY 1
+      ORDER BY 1
+
+  - id: vq_customers_per_state
+    question: How many customers do we have in each state?
+    tags: [customers, geography]
+    sql: |
+      SELECT customer_state, COUNT(DISTINCT customer_unique_id) AS customers
+      FROM marts.fct_orders
+      GROUP BY 1
+      ORDER BY customers DESC
+
+  - id: vq_top_categories_units
+    question: Which 10 product categories sold the most units?
+    tags: [category, top-n]
+    sql: |
+      SELECT category_name, COUNT(*) AS items_sold
+      FROM marts.fct_order_items
+      WHERE NOT is_canceled
+      GROUP BY 1
+      ORDER BY items_sold DESC
+      LIMIT 10
+
+  - id: vq_aov_by_payment_type
+    question: What is the average order value by primary payment method?
+    tags: [aov, payments]
+    sql: |
+      SELECT primary_payment_type,
+             SUM(items_value) / COUNT(*) AS average_order_value
+      FROM marts.fct_orders
+      WHERE NOT is_canceled AND primary_payment_type IS NOT NULL
+      GROUP BY 1
+      ORDER BY 2 DESC
+
+  - id: vq_late_rate_by_state
+    question: Which customer states have the highest late delivery rate?
+    tags: [delivery, ratio, geography]
+    sql: |
+      SELECT customer_state,
+             AVG(CASE WHEN is_late THEN 1.0 ELSE 0.0 END) AS late_delivery_rate,
+             COUNT(*) AS delivered_orders
+      FROM marts.fct_orders
+      WHERE is_delivered
+      GROUP BY 1
+      HAVING COUNT(*) >= 100
+      ORDER BY late_delivery_rate DESC
+
+  - id: vq_review_vs_late
+    question: Do late deliveries get worse reviews?
+    tags: [reviews, delivery]
+    sql: |
+      SELECT is_late,
+             AVG(review_score) AS average_review_score,
+             COUNT(*) AS orders
+      FROM marts.fct_orders
+      WHERE is_delivered AND review_score IS NOT NULL
+      GROUP BY 1
+
+  - id: vq_top_sellers_revenue
+    question: Who are the top 5 sellers by revenue and where are they located?
+    tags: [sellers, top-n, join]
+    sql: |
+      SELECT i.seller_id, s.city, s.state, SUM(i.price) AS revenue
+      FROM marts.fct_order_items i
+      JOIN marts.dim_sellers s USING (seller_id)
+      WHERE NOT i.is_canceled
+      GROUP BY 1, 2, 3
+      ORDER BY revenue DESC
+      LIMIT 5
+
+  - id: vq_repeat_rate
+    question: What share of customers ordered more than once?
+    tags: [customers, retention, ratio]
+    sql: |
+      SELECT AVG(CASE WHEN is_repeat_customer THEN 1.0 ELSE 0.0 END) AS repeat_customer_rate
+      FROM marts.dim_customers
+
+  - id: vq_orders_by_weekday
+    question: On which day of the week do customers place the most orders?
+    tags: [orders, calendar, join]
+    sql: |
+      SELECT d.day_name, COUNT(*) AS orders
+      FROM marts.fct_orders o
+      JOIN marts.dim_date d ON d.date_day = o.purchase_date
+      GROUP BY 1
+      ORDER BY orders DESC
+
+  - id: vq_cancellation_rate_monthly
+    question: How did the cancellation rate change month over month in 2018?
+    tags: [orders, ratio, time-series]
+    sql: |
+      SELECT date_trunc('month', purchased_at) AS month,
+             AVG(CASE WHEN is_canceled THEN 1.0 ELSE 0.0 END) AS cancellation_rate
+      FROM marts.fct_orders
+      WHERE year(purchased_at) = 2018
+      GROUP BY 1
+      ORDER BY 1
+
+  - id: vq_installments_by_type
+    question: How many installments do credit card payments use on average?
+    tags: [payments]
+    sql: |
+      SELECT AVG(payment_installments) AS average_installments
+      FROM marts.fct_order_payments
+      WHERE payment_type = 'credit_card'
+
+  - id: vq_freight_share_category
+    question: For which categories is freight the largest share of the item price?
+    tags: [freight, category, ratio]
+    sql: |
+      SELECT category_name,
+             SUM(freight_value) / NULLIF(SUM(price), 0) AS freight_to_price_ratio,
+             COUNT(*) AS items
+      FROM marts.fct_order_items
+      WHERE NOT is_canceled
+      GROUP BY 1
+      HAVING COUNT(*) >= 200
+      ORDER BY freight_to_price_ratio DESC
+      LIMIT 10
+
+  - id: vq_revenue_growth_yoy
+    question: How much did revenue grow from 2017 to 2018 for January to August?
+    tags: [revenue, growth, time-series]
+    sql: |
+      WITH y AS (
+        SELECT year(purchased_at) AS yr, SUM(items_value) AS revenue
+        FROM marts.fct_orders
+        WHERE NOT is_canceled
+          AND month(purchased_at) BETWEEN 1 AND 8
+          AND year(purchased_at) IN (2017, 2018)
+        GROUP BY 1
+      )
+      SELECT MAX(CASE WHEN yr = 2017 THEN revenue END) AS revenue_2017,
+             MAX(CASE WHEN yr = 2018 THEN revenue END) AS revenue_2018,
+             MAX(CASE WHEN yr = 2018 THEN revenue END)
+               / MAX(CASE WHEN yr = 2017 THEN revenue END) - 1 AS growth
+      FROM y
+
+  - id: vq_delivery_days_by_seller_state
+    question: What is the average delivery time in days by seller state?
+    tags: [delivery, sellers, join]
+    sql: |
+      SELECT i.seller_state, AVG(o.delivery_days) AS average_delivery_days,
+             COUNT(DISTINCT o.order_id) AS orders
+      FROM marts.fct_orders o
+      JOIN marts.fct_order_items i USING (order_id)
+      WHERE o.is_delivered
+      GROUP BY 1
+      ORDER BY 2
+
+  - id: vq_new_customers_monthly
+    question: How many new customers did we acquire each month?
+    tags: [customers, acquisition, time-series]
+    sql: |
+      SELECT date_trunc('month', first_order_at) AS month,
+             COUNT(*) AS new_customers
+      FROM marts.dim_customers
+      GROUP BY 1
+      ORDER BY 1
+
+  - id: vq_multi_seller_orders
+    question: What percentage of orders include items from more than one seller?
+    tags: [orders, sellers, ratio]
+    sql: |
+      SELECT AVG(CASE WHEN seller_count > 1 THEN 1.0 ELSE 0.0 END) AS multi_seller_order_share
+      FROM marts.fct_orders
+      WHERE item_count > 0
+
+  - id: vq_category_reviews_worst
+    question: Which categories have the lowest average review score (with at least 500 reviews)?
+    tags: [reviews, category]
+    sql: |
+      SELECT category_name, AVG(review_score) AS average_review_score, COUNT(*) AS reviewed_items
+      FROM marts.fct_order_items
+      WHERE review_score IS NOT NULL
+      GROUP BY 1
+      HAVING COUNT(*) >= 500
+      ORDER BY average_review_score
+      LIMIT 10
+
+  - id: vq_heaviest_products_category
+    question: Which product categories have the heaviest products on average?
+    tags: [products, category]
+    sql: |
+      SELECT category_name, AVG(product_weight_g) AS average_weight_g, COUNT(*) AS products
+      FROM marts.dim_products
+      GROUP BY 1
+      ORDER BY average_weight_g DESC
+      LIMIT 10
+
+  - id: vq_order_status_breakdown
+    question: How are orders distributed across statuses?
+    tags: [orders, status]
+    sql: |
+      SELECT order_status, COUNT(*) AS orders,
+             COUNT(*) * 1.0 / SUM(COUNT(*)) OVER () AS share
+      FROM marts.fct_orders
+      GROUP BY 1
+      ORDER BY orders DESC
+
+  - id: vq_ltv_top_customers
+    question: Who are our 10 most valuable customers by lifetime value?
+    tags: [customers, top-n]
+    sql: |
+      SELECT customer_unique_id, state, order_count, lifetime_value
+      FROM marts.dim_customers
+      ORDER BY lifetime_value DESC
+      LIMIT 10
+
+  - id: vq_weekend_share_revenue
+    question: What share of revenue comes from weekend purchases?
+    tags: [revenue, calendar, join, ratio]
+    sql: |
+      SELECT SUM(CASE WHEN d.is_weekend THEN o.items_value ELSE 0 END)
+               / SUM(o.items_value) AS weekend_revenue_share
+      FROM marts.fct_orders o
+      JOIN marts.dim_date d ON d.date_day = o.purchase_date
+      WHERE NOT o.is_canceled
+
+  - id: vq_sellers_per_state
+    question: How many sellers are active in each state?
+    tags: [sellers, geography]
+    sql: |
+      SELECT seller_state, COUNT(DISTINCT seller_id) AS active_sellers
+      FROM marts.fct_order_items
+      WHERE NOT is_canceled
+      GROUP BY 1
+      ORDER BY active_sellers DESC

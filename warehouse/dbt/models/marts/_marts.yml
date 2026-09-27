@@ -241,9 +241,12 @@ models:
 
   - name: dim_date
     description: Calendar dimension, one row per day from 2016-01-01 to 2018-12-31.
+    time_spine:
+      standard_granularity_column: date_day
     columns:
       - name: date_day
         description: Primary key. Calendar date.
+        granularity: day
         data_tests: [unique, not_null]
       - name: year
         description: Calendar year.

@@ -78,7 +78,9 @@ def zip_prefix(col: str) -> Column:
 
 
 def ts(col: str) -> Column:
-    return F.to_timestamp(F.col(col), "yyyy-MM-dd HH:mm:ss")
+    # Source timestamps are naive Brazil local time; keep them timezone-free (NTZ) so
+    # downstream engines never shift them by the session time zone.
+    return F.to_timestamp_ntz(F.col(col), F.lit("yyyy-MM-dd HH:mm:ss"))
 
 
 def _orders(b: Bronze) -> DataFrame:

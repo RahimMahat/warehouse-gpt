@@ -1,0 +1,442 @@
+version: 2
+
+# Governed semantic layer (MetricFlow spec). This is the single source of truth for
+# business metrics. src/warehouse_gpt/context/semantic.py compiles the generated
+# target/semantic_manifest.json into agent context. `meta` carries agent-facing hints:
+#   synonyms: words users say for this concept
+#   pitfalls: mistakes the agent must avoid
+
+semantic_models:
+  - name: orders
+    description: Orders placed on the marketplace, one row per order.
+    model: ref('fct_orders')
+    defaults:
+      agg_time_dimension: purchase_date
+    entities:
+      - name: order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_unique_id
+    dimensions:
+      - name: purchase_date
+        type: time
+        expr: purchase_date
+        type_params: {time_granularity: day}
+      - name: order_status
+        type: categorical
+      - name: customer_state
+        type: categorical
+        config:
+          meta: {synonyms: [state, region, UF, customer location]}
+      - name: customer_city
+        type: categorical
+      - name: primary_payment_type
+        type: categorical
+        config:
+          meta: {synonyms: [payment method]}
+      - name: is_canceled
+        type: categorical
+      - name: is_delivered
+        type: categorical
+      - name: is_late
+        type: categorical
+      - name: review_score
+        type: categorical
+    measures:
+      - name: order_count
+        description: Number of orders (all statuses).
+        agg: count
+        expr: order_id
+      - name: valid_order_count
+        description: Orders that were not canceled or unavailable.
+        agg: sum
+        expr: case when not is_canceled then 1 else 0 end
+      - name: canceled_order_count
+        agg: sum
+        expr: case when is_canceled then 1 else 0 end
+      - name: gmv
+        description: Item revenue excluding freight, non-canceled orders only.
+        agg: sum
+        expr: case when not is_canceled then items_value else 0 end
+      - name: billed_value
+        description: Items + freight, non-canceled orders only.
+        agg: sum
+        expr: case when not is_canceled then order_value else 0 end
+      - name: freight_total
+        agg: sum
+        expr: case when not is_canceled then freight_value else 0 end
+      - name: order_customers
+        description: Distinct real customers who ordered.
+        agg: count_distinct
+        expr: customer_unique_id
+      - name: review_score_sum
+        agg: sum
+        expr: review_score
+      - name: reviewed_order_count
+        agg: sum
+        expr: case when review_score is not null then 1 else 0 end
+      - name: delivered_order_count
+        agg: sum
+        expr: case when is_delivered then 1 else 0 end
+      - name: late_order_count
+        agg: sum
+        expr: case when is_late then 1 else 0 end
+      - name: delivery_days_sum
+        agg: sum
+        expr: case when is_delivered then delivery_days else 0 end
+
+  - name: order_items
+    description: Items sold, one row per item. Use for product category and seller analysis.
+    model: ref('fct_order_items')
+    defaults:
+      agg_time_dimension: item_purchase_date
+    entities:
+      - name: order_item
+        type: primary
+        expr: order_item_key
+      - name: order
+        type: foreign
+        expr: order_id
+      - name: product
+        type: foreign
+        expr: product_id
+      - name: seller
+        type: foreign
+        expr: seller_id
+    dimensions:
+      - name: item_purchase_date
+        type: time
+        expr: purchase_date
+        type_params: {time_granularity: day}
+      - name: category_name
+        type: categorical
+        config:
+          meta: {synonyms: [category, product category, product type, department]}
+      - name: seller_state
+        type: categorical
+    measures:
+      - name: items_sold
+        description: Units sold in non-canceled orders.
+        agg: sum
+        expr: case when not is_canceled then 1 else 0 end
+      - name: item_revenue
+        description: Sum of item price in non-canceled orders (excludes freight).
+        agg: sum
+        expr: case when not is_canceled then price else 0 end
+      - name: active_sellers
+        description: Distinct sellers with at least one item sold.
+        agg: count_distinct
+        expr: seller_id
+
+  - name: payments
+    description: Payments, one row per payment method used on an order.
+    model: ref('fct_order_payments')
+    defaults:
+      agg_time_dimension: payment_purchase_date
+    entities:
+      - name: payment
+        type: primary
+        expr: payment_key
+      - name: order
+        type: foreign
+        expr: order_id
+    dimensions:
+      - name: payment_purchase_date
+        type: time
+        expr: purchase_date
+        type_params: {time_granularity: day}
+      - name: payment_type
+        type: categorical
+        config:
+          meta: {synonyms: [payment method, boleto, credit card]}
+    measures:
+      - name: payment_total
+        agg: sum
+        expr: payment_value
+      - name: payment_count
+        agg: count
+        expr: payment_key
+      - name: installments_sum
+        agg: sum
+        expr: payment_installments
+
+  - name: customers
+    description: Real customers (customer_unique_id), one row per person.
+    model: ref('dim_customers')
+    defaults:
+      agg_time_dimension: first_order_date
+    entities:
+      - name: customer
+        type: primary
+        expr: customer_unique_id
+    dimensions:
+      - name: first_order_date
+        type: time
+        expr: cast(first_order_at as date)
+        type_params: {time_granularity: day}
+      - name: state
+        type: categorical
+      - name: is_repeat_customer
+        type: categorical
+    measures:
+      - name: customer_count
+        agg: count
+        expr: customer_unique_id
+      - name: repeat_customer_count
+        agg: sum
+        expr: case when is_repeat_customer then 1 else 0 end
+      - name: lifetime_value_sum
+        agg: sum
+        expr: lifetime_value
+
+  - name: sellers
+    description: Marketplace sellers.
+    model: ref('dim_sellers')
+    entities:
+      - name: seller
+        type: primary
+        expr: seller_id
+    dimensions:
+      - name: state
+        type: categorical
+      - name: city
+        type: categorical
+
+  - name: products
+    description: Products and their categories.
+    model: ref('dim_products')
+    entities:
+      - name: product
+        type: primary
+        expr: product_id
+    dimensions:
+      - name: category_name
+        type: categorical
+
+metrics:
+  - name: orders
+    label: Orders
+    description: Number of orders placed, all statuses. Use valid_orders to exclude cancellations.
+    type: simple
+    type_params: {measure: order_count}
+    config:
+      meta: {synonyms: [order count, number of orders, purchases, transactions]}
+
+  - name: valid_orders
+    label: Valid orders
+    description: Orders excluding canceled and unavailable.
+    type: simple
+    type_params: {measure: valid_order_count}
+
+  - name: revenue
+    label: Revenue (GMV)
+    description: >
+      Gross merchandise value, the sum of item prices in BRL, excluding freight and
+      excluding canceled/unavailable orders. The default meaning of revenue or sales.
+    type: simple
+    type_params: {measure: gmv}
+    config:
+      meta:
+        synonyms: [gmv, sales, turnover, gross merchandise value, income]
+        pitfalls:
+          - Exclude canceled/unavailable orders (is_canceled = false).
+          - Revenue excludes freight unless the user asks for total billed.
+          - By category or seller, use fct_order_items.price (the order grain cannot split by category).
+
+  - name: billed_value
+    label: Total billed
+    description: Items plus freight in BRL, non-canceled orders.
+    type: simple
+    type_params: {measure: billed_value}
+    config:
+      meta: {synonyms: [total order value, amount billed, including shipping]}
+
+  - name: freight
+    label: Freight
+    description: Shipping charges in BRL, non-canceled orders.
+    type: simple
+    type_params: {measure: freight_total}
+    config:
+      meta: {synonyms: [shipping cost, delivery fee, frete]}
+
+  - name: average_order_value
+    label: Average order value (AOV)
+    description: Revenue divided by valid orders.
+    type: ratio
+    type_params:
+      numerator: revenue
+      denominator: valid_orders
+    config:
+      meta: {synonyms: [aov, average basket, average ticket, ticket medio]}
+
+  - name: customers
+    label: Customers
+    description: Distinct real customers who placed an order (customer_unique_id).
+    type: simple
+    type_params: {measure: order_customers}
+    config:
+      meta:
+        synonyms: [buyers, shoppers, unique customers, clients]
+        pitfalls:
+          - Count DISTINCT customer_unique_id. customer_id is issued per order and overcounts people.
+
+  - name: average_review_score
+    label: Average review score
+    description: Mean review score (1-5) over reviewed orders.
+    type: ratio
+    type_params:
+      numerator: review_score_total
+      denominator: reviewed_orders
+    config:
+      meta: {synonyms: [satisfaction, rating, csat, stars, nps]}
+
+  - name: late_delivery_rate
+    label: Late delivery rate
+    description: Share of delivered orders that arrived more than a day after the promised date.
+    type: ratio
+    type_params:
+      numerator: late_orders
+      denominator: delivered_orders
+    config:
+      meta:
+        synonyms: [late rate, on-time rate inverse, delayed deliveries, sla breach]
+        pitfalls:
+          - Denominator is delivered orders only, not all orders.
+
+  - name: average_delivery_days
+    label: Average delivery time (days)
+    description: Mean days from purchase to delivery, delivered orders only.
+    type: ratio
+    type_params:
+      numerator: delivery_days_total
+      denominator: delivered_orders
+    config:
+      meta: {synonyms: [delivery time, shipping time, lead time, time to deliver]}
+
+  - name: cancellation_rate
+    label: Cancellation rate
+    description: Share of orders canceled or unavailable.
+    type: ratio
+    type_params:
+      numerator: canceled_orders
+      denominator: orders
+
+  - name: items_sold
+    label: Items sold
+    description: Units sold in non-canceled orders.
+    type: simple
+    type_params: {measure: items_sold}
+    config:
+      meta: {synonyms: [units, quantity sold, volume]}
+
+  - name: category_revenue
+    label: Item revenue
+    description: Item-level revenue (price, excl. freight, non-canceled). Use for category/seller/product breakdowns.
+    type: simple
+    type_params: {measure: item_revenue}
+
+  - name: active_sellers
+    label: Active sellers
+    description: Distinct sellers with at least one item sold.
+    type: simple
+    type_params: {measure: active_sellers}
+    config:
+      meta: {synonyms: [number of sellers, merchants, vendors]}
+
+  - name: payment_value
+    label: Payment value
+    description: Total amount paid across payment methods in BRL.
+    type: simple
+    type_params: {measure: payment_total}
+
+  - name: average_installments
+    label: Average installments
+    description: Mean number of installments per payment.
+    type: ratio
+    type_params:
+      numerator: installments_total
+      denominator: payments
+
+  - name: repeat_customer_rate
+    label: Repeat customer rate
+    description: Share of customers with more than one order.
+    type: ratio
+    type_params:
+      numerator: repeat_customers
+      denominator: customer_count
+    config:
+      meta: {synonyms: [retention, returning customers, loyalty, repeat purchase rate]}
+
+  # Building blocks for ratio metrics (hidden from the agent's metric catalog).
+  - name: review_score_total
+    label: Review score total
+    type: simple
+    type_params: {measure: review_score_sum}
+    config:
+      meta: {hidden: true}
+
+  - name: reviewed_orders
+    label: Reviewed orders
+    type: simple
+    type_params: {measure: reviewed_order_count}
+    config:
+      meta: {hidden: true}
+
+  - name: late_orders
+    label: Late orders
+    type: simple
+    type_params: {measure: late_order_count}
+    config:
+      meta: {hidden: true}
+
+  - name: delivered_orders
+    label: Delivered orders
+    type: simple
+    type_params: {measure: delivered_order_count}
+    config:
+      meta: {hidden: true}
+
+  - name: delivery_days_total
+    label: Delivery days total
+    type: simple
+    type_params: {measure: delivery_days_sum}
+    config:
+      meta: {hidden: true}
+
+  - name: canceled_orders
+    label: Canceled orders
+    type: simple
+    type_params: {measure: canceled_order_count}
+    config:
+      meta: {hidden: true}
+
+  - name: installments_total
+    label: Installments total
+    type: simple
+    type_params: {measure: installments_sum}
+    config:
+      meta: {hidden: true}
+
+  - name: payments
+    label: Payments
+    type: simple
+    type_params: {measure: payment_count}
+    config:
+      meta: {hidden: true}
+
+  - name: repeat_customers
+    label: Repeat customers
+    type: simple
+    type_params: {measure: repeat_customer_count}
+    config:
+      meta: {hidden: true}
+
+  - name: customer_count
+    label: Customer count
+    type: simple
+    type_params: {measure: customer_count}
+    config:
+      meta: {hidden: true}
+

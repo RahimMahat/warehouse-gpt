@@ -18,6 +18,7 @@ def literal_df(spark: SparkSession, rows: Sequence[Sequence[Any]], schema: str) 
     explodes, so no Python worker is started.
     """
     struct = StructType.fromDDL(schema)
+    assert isinstance(struct, StructType)
     names = [f.name for f in struct.fields]
     if not rows:
         return spark.range(0).select(*[F.lit(None).cast(f.dataType).alias(f.name) for f in struct.fields])

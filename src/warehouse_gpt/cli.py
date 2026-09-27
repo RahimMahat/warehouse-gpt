@@ -11,14 +11,14 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from warehouse_gpt.config import PROJECT_ROOT, get_settings
+from warehouse_gpt.config import get_settings
 
 app = typer.Typer(no_args_is_help=True, help="WarehouseGPT: analytics agent over a lakehouse.")
 data_app = typer.Typer(no_args_is_help=True, help="Build the lakehouse: raw -> bronze -> silver -> dbt.")
+context_app = typer.Typer(no_args_is_help=True, help="Semantic layer, profiling and metadata index.")
 app.add_typer(data_app, name="data")
+app.add_typer(context_app, name="context")
 console = Console()
-
-DBT_DIR = PROJECT_ROOT / "warehouse" / "dbt"
 
 
 def _print_counts(title: str, counts: dict[str, int]) -> None:
@@ -64,7 +64,7 @@ def _dbt(*args: str) -> None:
         "WGPT_WAREHOUSE_PATH": settings.warehouse_path.as_posix(),
     }
     dbt = [sys.executable, "-m", "dbt.cli.main"]
-    cmd = [*dbt, *args, "--project-dir", str(DBT_DIR), "--profiles-dir", str(DBT_DIR)]
+    cmd = [*dbt, *args, "--project-dir", str(settings.dbt_dir), "--profiles-dir", str(settings.dbt_dir)]
     result = subprocess.run(cmd, env=env, check=False)
     if result.returncode != 0:
         raise typer.Exit(result.returncode)
@@ -84,6 +84,38 @@ def build_all() -> None:
     download()
     spark_layers()
     dbt_build()
+    context_build()
+
+
+@context_app.command("build")
+def context_build() -> None:
+    """Profile the warehouse and (re)build the metadata vector index."""
+    from warehouse_gpt.context.store import ContextStore
+
+    store = ContextStore.build()
+    n = store.index.count() if store.index else 0
+    console.print(
+        f"[green]context built:[/] {len(store.catalog.tables)} tables, "
+        f"{len(store.semantic.public_metrics)} metrics, {len(store.examples)} verified queries, "
+        f"{len(store.profile.value_hints)} value hints, {n} indexed documents"
+    )
+
+
+@context_app.command("show")
+def context_show(
+    question: str,
+    level: int = typer.Option(4, min=1, max=4, help="1=raw DDL, 2=+dbt docs, 3=+semantic, 4=+examples"),
+) -> None:
+    """Print the exact context the agent would see for QUESTION at a given level."""
+    from warehouse_gpt.context.render import ContextLevel
+    from warehouse_gpt.context.store import ContextStore
+
+    rendered = ContextStore.load().renderer.render(question, ContextLevel(level))
+    console.print(rendered.text, markup=False, highlight=False)
+    console.print(
+        f"\n[dim]level={rendered.level.name} tables={len(rendered.tables)} "
+        f"examples={rendered.example_ids} ~{rendered.approx_tokens:,} tokens[/]"
+    )
 
 
 if __name__ == "__main__":

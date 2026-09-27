@@ -46,6 +46,8 @@ def get_spark(app_name: str = "warehouse-gpt", settings: Settings | None = None)
         )
         .config("spark.ui.showConsoleProgress", "false")
         .config("spark.databricks.delta.schema.autoMerge.enabled", "false")
+        # Silver uses TIMESTAMP_NTZ (naive local time); new tables need the feature enabled.
+        .config("spark.databricks.delta.properties.defaults.feature.timestampNtz", "supported")
     )
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
