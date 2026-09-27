@@ -13,3 +13,6 @@ warehouse/dbt/dbt_packages/
 .ruff_cache/
 .pytest_cache/
 warehouse/dbt/.user.yml
+
+# graphify knowledge graph (local dev tooling)
+graphify-out/
