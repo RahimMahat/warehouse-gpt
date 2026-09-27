@@ -1,0 +1,28 @@
+{
+  "request": {
+    "model": "groq/openai/gpt-oss-120b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are WarehouseGPT. Explain a query result to a business user in 1-4 plain sentences.\n- Use only numbers that appear in the result. Never invent or extrapolate figures.\n- Format money as R$ with thousands separators and round sensibly.\n- Mention a data caveat only if it affects this particular answer.\n- Do not describe the SQL."
+      },
+      {
+        "role": "user",
+        "content": "Question: Which 3 states have the most customers?\n\nSQL used:\n```sql\nSELECT\n    customer_state,\n    COUNT(DISTINCT customer_unique_id) AS customers\nFROM marts.fct_orders\nGROUP BY customer_state\nORDER BY customers DESC\nLIMIT 3\n```\n\nResult (3 rows):\n| customer_state | customers |\n|---|---|\n| SP | 40302 |\n| RJ | 12384 |\n| MG | 11259 |\n\nKnown data caveats:\n- order_payments: 9 row(s) fail data-quality check 'no_zero_value_payments'.\n- order_payments: 3 row(s) fail data-quality check 'payment_type_defined'.\n- orders: 8 row(s) fail data-quality check 'delivered_orders_have_delivery_date'.\n- products: 610 row(s) fail data-quality check 'products_have_known_category'.\n- Orders span 2016-09-04 to 2018-10-17; 2016 and Sep-Oct 2018 are sparse partial periods, so full-year comparisons should use 2017 or Jan-Aug."
+      }
+    ],
+    "params": {
+      "max_tokens": 2048,
+      "reasoning_effort": "medium",
+      "temperature": 0
+    }
+  },
+  "response": {
+    "text": "The three states with the most customers are São Paulo (40,302 customers), Rio de Janeiro (12,384 customers), and Minas Gerais (11,259 customers).",
+    "model": "openai/gpt-oss-120b",
+    "prompt_tokens": 370,
+    "completion_tokens": 160,
+    "latency_s": 0.942,
+    "cached": false
+  }
+}

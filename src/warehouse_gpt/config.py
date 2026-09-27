@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -29,6 +30,25 @@ class Settings(BaseSettings):
     dbt_dir: Path = PROJECT_ROOT / "warehouse" / "dbt"
     verified_queries_path: Path = PROJECT_ROOT / "warehouse" / "semantic" / "verified_queries.yml"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
+
+    # LLM providers. Keys use the providers' conventional names (no WGPT_ prefix).
+    gemini_api_key: SecretStr | None = Field(
+        default=None, validation_alias=AliasChoices("GEMINI_API_KEY", "WGPT_GEMINI_API_KEY")
+    )
+    groq_api_key: SecretStr | None = Field(
+        default=None, validation_alias=AliasChoices("GROQ_API_KEY", "WGPT_GROQ_API_KEY")
+    )
+    ollama_base_url: str = "http://localhost:11434"
+    default_model: str = "gpt-oss-120b"
+    # live: always call the API. cache: reuse stored responses, store new ones (dev default).
+    # replay: stored responses only, a miss is an error (tests/CI, no network, no keys).
+    llm_mode: Literal["live", "cache", "replay"] = "cache"
+    llm_store_dir: Path | None = None  # defaults to data/llm_cache
+
+    # Agent / execution
+    max_repairs: int = Field(default=2, ge=0)
+    query_timeout_s: float = 30.0
+    max_result_rows: int = 1000
 
     @property
     def manifest_path(self) -> Path:
@@ -61,6 +81,10 @@ class Settings(BaseSettings):
     @property
     def warehouse_path(self) -> Path:
         return self.data_dir / "warehouse.duckdb"
+
+    @property
+    def llm_store_path(self) -> Path:
+        return self.llm_store_dir or self.data_dir / "llm_cache"
 
 
 @lru_cache

@@ -1,0 +1,28 @@
+{
+  "request": {
+    "model": "groq/openai/gpt-oss-120b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are WarehouseGPT. Explain a query result to a business user in 1-4 plain sentences.\n- Use only numbers that appear in the result. Never invent or extrapolate figures.\n- Format money as R$ with thousands separators and round sensibly.\n- Mention a data caveat only if it affects this particular answer.\n- Do not describe the SQL."
+      },
+      {
+        "role": "user",
+        "content": "Question: What was total revenue in 2018?\n\nSQL used:\n```sql\nSELECT \n    SUM(CASE WHEN NOT is_canceled THEN items_value ELSE 0 END) AS total_revenue_2018\nFROM marts.fct_orders\nWHERE NOT is_canceled\n  AND EXTRACT(year FROM purchased_at) = 2018\n```\n\nResult (1 rows):\n| total_revenue_2018 |\n|---|\n| 7,341,182.41 |\n\nKnown data caveats:\n- order_payments: 9 row(s) fail data-quality check 'no_zero_value_payments'.\n- order_payments: 3 row(s) fail data-quality check 'payment_type_defined'.\n- orders: 8 row(s) fail data-quality check 'delivered_orders_have_delivery_date'.\n- products: 610 row(s) fail data-quality check 'products_have_known_category'.\n- Orders span 2016-09-04 to 2018-10-17; 2016 and Sep-Oct 2018 are sparse partial periods, so full-year comparisons should use 2017 or Jan-Aug."
+      }
+    ],
+    "params": {
+      "max_tokens": 2048,
+      "reasoning_effort": "medium",
+      "temperature": 0
+    }
+  },
+  "response": {
+    "text": "The total revenue recorded for 2018 was **R$7,341,182.41**. This amount reflects all non‑canceled orders up to October 17 2018, as the dataset does not include the full year.",
+    "model": "openai/gpt-oss-120b",
+    "prompt_tokens": 374,
+    "completion_tokens": 249,
+    "latency_s": 1.023,
+    "cached": false
+  }
+}

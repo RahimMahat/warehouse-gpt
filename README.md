@@ -14,8 +14,8 @@ Everything runs at **$0**: local Spark, DuckDB, free-tier LLM APIs or local Olla
 |---|---|
 | 1. Data foundation: Spark bronze/silver (Delta Lake), DQ framework, dbt gold layer | ✅ done |
 | 2. Semantic layer + metadata index | ✅ done |
-| 3. Agent MVP (LangGraph, LiteLLM, sqlglot guard) | ⏳ next |
-| 4. Eval harness: ablation ladder + model leaderboard | |
+| 3. Agent MVP: LangGraph pipeline, LiteLLM router, sqlglot guard, sandboxed DuckDB, CLI | ✅ done |
+| 4. Eval harness: ablation ladder + model leaderboard | ⏳ next |
 | 5. Hardening: self-correction, guardrails, cassettes, tracing | |
 | 6. FastAPI + Streamlit UI | |
 | 7. CI, Docker, Hugging Face Spaces deploy | |
@@ -66,11 +66,40 @@ uv run wgpt context build                                   # profile + embed + 
 uv run wgpt context show "revenue by month in 2018" --level 3   # see exactly what the LLM sees
 ```
 
+## The agent
+
+```
+question ─► context (L1–L4) ─► generate SQL ─► sqlglot guard ─► DuckDB sandbox ─► answer + caveats
+                                    ▲                │                  │
+                                    └──── repair ◄───┴──────────────────┘
+                     (guard violation · engine error · empty result · no SQL; bounded by max_repairs)
+```
+
+```bash
+uv run wgpt models                                           # aliases, free-tier limits, key status
+uv run wgpt ask "Top 5 categories by revenue in 2017 and their review scores?"
+uv run wgpt ask "How many customers do we have?" --level 1 --max-repairs 0 --trace
+```
+
+- **Models:** one LiteLLM client across Gemini (free tier), Groq (free tier: `gpt-oss-120b`, `qwen3-27b`) and local Ollama.
+  - A sliding-window limiter keeps within Groq's 8k tokens/min.
+  - Retries honor `Retry-After`.
+  - Tokens are counted per model.
+- **Safety, in two independent layers:**
+  - A sqlglot guard allows one read-only query over allowlisted `marts`/`meta` tables, with no file, network or engine functions.
+  - DuckDB attaches the warehouse `READ_ONLY` with external access disabled and the configuration locked.
+  - Out-of-scope or unsafe requests end as `CANNOT_ANSWER` refusals.
+- **Reproducible:** LLM responses are content-addressed on disk.
+  - `WGPT_LLM_MODE=cache` (default) makes re-runs free.
+  - `replay` runs the end-to-end tests from committed cassettes, with no network and no keys.
+
+See [ADR-004](docs/adr/004-agent-architecture.md).
+
 ## Quickstart
 
 ```bash
 uv sync
-cp .env.example .env        # Windows only: point to JDK 21 + winutils (see below)
+cp .env.example .env        # add free GEMINI_API_KEY / GROQ_API_KEY; on Windows also JDK 21 + winutils
 uv run wgpt data build      # download → spark → dbt build + docs → context index (~3 min)
 uv run pytest               # unit + warehouse contract tests
 ```

@@ -14,10 +14,13 @@ dependencies = [
     "fastembed>=0.8.1",
     "kagglehub>=1.0.2",
     "lancedb>=0.39.0",
+    "langgraph>=1.2.12",
+    "litellm>=1.102.1",
     "pydantic-settings>=2.15.0",
     "pyspark>=4.0.1,<4.1",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",
+    "sqlglot>=30.19.0",
     "structlog>=26.1.0",
     "typer>=0.27.2",
 ]
