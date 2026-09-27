@@ -1,0 +1,28 @@
+version: 2
+
+sources:
+  - name: silver
+    description: >
+      Cleaned, typed Delta Lake tables produced by the Spark silver job
+      (src/warehouse_gpt/pipelines/silver.py). Read in place with DuckDB's delta_scan.
+    meta:
+      external_location: "delta_scan('{{ env_var('WGPT_SILVER_DIR', '../../data/lake/silver') }}/{name}')"
+    tables:
+      - name: orders
+        description: One row per order with lifecycle timestamps.
+      - name: order_items
+        description: One row per item within an order.
+      - name: order_payments
+        description: One row per payment method used for an order.
+      - name: order_reviews
+        description: Latest customer review per order.
+      - name: customers
+        description: One row per order-level customer_id. customer_unique_id identifies the real person.
+      - name: sellers
+        description: One row per marketplace seller.
+      - name: products
+        description: One row per product with English category name.
+      - name: geolocation
+        description: One row per 5-digit zip prefix with centroid coordinates.
+      - name: dq_results
+        description: Append-only log of Spark data-quality check results.

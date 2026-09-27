@@ -1,0 +1,51 @@
+[project]
+name = "warehouse-gpt"
+version = "0.1.0"
+description = "Production-grade analytics agent over a Spark + dbt lakehouse, with ablation evals."
+readme = "README.md"
+authors = [
+    { name = "RahimMahat", email = "rahimmahat99@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "dbt-duckdb>=1.11.0",
+    "delta-spark>=4.0,<4.1",
+    "duckdb>=1.5.5",
+    "kagglehub>=1.0.2",
+    "pydantic-settings>=2.15.0",
+    "pyspark>=4.0.1,<4.1",
+    "rich>=15.0.0",
+    "structlog>=26.1.0",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+wgpt = "warehouse_gpt.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["spark: tests that start a local Spark session (slow)"]

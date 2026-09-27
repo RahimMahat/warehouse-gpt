@@ -1,0 +1,21 @@
+version: 2
+
+models:
+  - name: dq_check_results
+    description: >
+      Latest result of every Spark silver-layer data-quality check. Failing warn checks are
+      known data caveats (e.g. delivered orders missing a delivery date) that answers should mention.
+    columns:
+      - name: table_name
+        description: Silver table the check ran against.
+        data_tests: [not_null]
+      - name: check_name
+        description: Name of the check.
+      - name: severity
+        description: error (blocks the pipeline) or warn (known caveat).
+        data_tests:
+          - accepted_values: {arguments: {values: [error, warn]}}
+      - name: passed
+        description: Whether the check passed.
+      - name: failing_rows
+        description: Number of offending rows.

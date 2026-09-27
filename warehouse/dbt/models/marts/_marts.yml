@@ -1,0 +1,265 @@
+version: 2
+
+models:
+  - name: fct_orders
+    description: >
+      Order-grain fact table: one row per order placed on the Olist marketplace
+      (Sep 2016 - Oct 2018). Combines order lifecycle timestamps, the customer,
+      aggregated item values, payments and the latest review score.
+      Use this table for order counts, order value, delivery performance and reviews.
+      Canceled/unavailable orders are included; filter with is_canceled for revenue.
+    columns:
+      - name: order_id
+        description: Primary key. Unique order identifier.
+        data_tests: [unique, not_null]
+      - name: customer_unique_id
+        description: >
+          The real customer (person). Use count(distinct customer_unique_id) to count customers.
+        data_tests:
+          - not_null
+          - relationships: {arguments: {to: ref('dim_customers'), field: customer_unique_id}}
+      - name: customer_id
+        description: >
+          Order-level customer key issued once per order. Do NOT use it to count customers;
+          it is 1:1 with order_id.
+        data_tests: [unique, not_null]
+      - name: customer_state
+        description: Two-letter Brazilian state code (UF) of the customer, e.g. SP, RJ, MG.
+      - name: customer_city
+        description: Customer city, lowercase without accents (e.g. sao paulo).
+      - name: order_status
+        description: Current order status.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [created, approved, invoiced, processing, shipped, delivered, canceled, unavailable]
+      - name: purchased_at
+        description: Timestamp when the customer placed the order. The canonical order date.
+        data_tests: [not_null]
+      - name: purchase_date
+        description: Calendar date of purchased_at. Join to dim_date.date_day.
+      - name: approved_at
+        description: When the payment was approved.
+      - name: delivered_to_carrier_at
+        description: When the seller handed the order to the logistics carrier.
+      - name: delivered_to_customer_at
+        description: When the order was delivered to the customer. Null if not delivered.
+      - name: estimated_delivery_at
+        description: Delivery date promised to the customer at purchase time.
+      - name: is_delivered
+        description: True if status is delivered and a delivery timestamp exists.
+      - name: is_canceled
+        description: True if status is canceled or unavailable. Exclude these from revenue.
+      - name: delivery_days
+        description: Days between purchase and delivery to customer. Null if not delivered.
+      - name: is_late
+        description: >
+          True if delivered more than one day after the estimated delivery date.
+          Null for orders that were not delivered.
+      - name: item_count
+        description: Number of items (units) in the order.
+      - name: seller_count
+        description: Number of distinct sellers fulfilling the order.
+      - name: product_count
+        description: Number of distinct products in the order.
+      - name: items_value
+        description: Sum of item prices in BRL, excluding freight. This is GMV / product revenue.
+      - name: freight_value
+        description: Sum of freight (shipping) charges in BRL.
+      - name: order_value
+        description: items_value + freight_value in BRL. Total amount billed for the order.
+      - name: payment_value
+        description: >
+          Total paid across all payment methods in BRL. Usually equals order_value but can
+          differ slightly (interest on installments, vouchers). Null for orders without payments.
+      - name: payment_count
+        description: Number of payment records (methods / vouchers) used.
+      - name: primary_payment_type
+        description: Payment method covering the largest share of the order (credit_card, boleto, voucher, debit_card).
+      - name: max_installments
+        description: Maximum number of credit card installments chosen for the order.
+      - name: review_score
+        description: Customer satisfaction score 1 (worst) to 5 (best) from the latest review. Null if not reviewed.
+        data_tests:
+          - accepted_values: {arguments: {values: [1, 2, 3, 4, 5], quote: false}}
+
+  - name: fct_order_items
+    description: >
+      Item-grain fact table: one row per item (unit) in an order. Use for product,
+      category and seller analysis (sales by category, top sellers, prices).
+      Revenue by category = sum(price) excluding canceled orders.
+    columns:
+      - name: order_item_key
+        description: Primary key, order_id + '-' + order_item_id.
+        data_tests: [unique, not_null]
+      - name: order_id
+        description: The order this item belongs to.
+        data_tests:
+          - not_null
+          - relationships: {arguments: {to: ref('fct_orders'), field: order_id}}
+      - name: order_item_id
+        description: Sequence number of the item within the order (1, 2, 3...).
+      - name: product_id
+        description: Product sold.
+        data_tests:
+          - relationships: {arguments: {to: ref('dim_products'), field: product_id}}
+      - name: seller_id
+        description: Seller who fulfilled the item.
+        data_tests:
+          - relationships: {arguments: {to: ref('dim_sellers'), field: seller_id}}
+      - name: customer_unique_id
+        description: The real customer who bought the item.
+      - name: customer_state
+        description: Customer state code.
+      - name: seller_state
+        description: Seller state code.
+      - name: category_name
+        description: English product category, e.g. health_beauty, bed_bath_table. 'unknown' when missing.
+      - name: order_status
+        description: Status of the parent order.
+      - name: is_canceled
+        description: True if the parent order was canceled or unavailable.
+      - name: purchased_at
+        description: When the parent order was placed.
+      - name: purchase_date
+        description: Date of purchased_at.
+      - name: shipping_limit_at
+        description: Deadline for the seller to hand the item to the carrier.
+      - name: price
+        description: Item price in BRL, excluding freight.
+      - name: freight_value
+        description: Freight allocated to this item in BRL.
+      - name: item_total_value
+        description: price + freight_value.
+      - name: review_score
+        description: Review score (1-5) of the parent order.
+
+  - name: fct_order_payments
+    description: >
+      Payment-grain fact table: one row per payment. An order can be split across several
+      payment methods or vouchers. Use for payment-method mix and installments analysis.
+    columns:
+      - name: payment_key
+        description: Primary key, order_id + '-' + payment_sequential.
+        data_tests: [unique, not_null]
+      - name: order_id
+        description: The order being paid.
+        data_tests:
+          - relationships: {arguments: {to: ref('fct_orders'), field: order_id}}
+      - name: payment_sequential
+        description: Sequence of the payment within the order.
+      - name: payment_type
+        description: credit_card, boleto (Brazilian bank slip), voucher, debit_card or not_defined.
+        data_tests:
+          - accepted_values: {arguments: {values: [credit_card, boleto, voucher, debit_card, not_defined]}}
+      - name: payment_installments
+        description: Number of installments chosen (credit card).
+      - name: payment_value
+        description: Amount paid with this method in BRL.
+      - name: customer_unique_id
+        description: The real customer.
+      - name: customer_state
+        description: Customer state code.
+      - name: order_status
+        description: Status of the order.
+      - name: purchased_at
+        description: When the order was placed.
+      - name: purchase_date
+        description: Date of purchased_at.
+
+  - name: dim_customers
+    description: >
+      One row per real customer (customer_unique_id), with lifetime metrics.
+      Location is the customer's most recent state/city.
+    columns:
+      - name: customer_unique_id
+        description: Primary key. The real customer (person).
+        data_tests: [unique, not_null]
+      - name: state
+        description: Most recent customer state code.
+      - name: city
+        description: Most recent customer city.
+      - name: first_order_at
+        description: Timestamp of the customer's first order.
+      - name: last_order_at
+        description: Timestamp of the customer's most recent order.
+      - name: order_count
+        description: Total orders placed (including canceled).
+      - name: valid_order_count
+        description: Orders that were not canceled/unavailable.
+      - name: lifetime_value
+        description: Sum of order_value over non-canceled orders, in BRL.
+      - name: is_repeat_customer
+        description: True if the customer placed more than one order. Only ~3% of customers repeat.
+      - name: avg_review_score
+        description: Average review score given by the customer.
+
+  - name: dim_sellers
+    description: One row per marketplace seller with location.
+    columns:
+      - name: seller_id
+        description: Primary key.
+        data_tests: [unique, not_null]
+      - name: zip_code_prefix
+        description: First 5 digits of the seller zip code.
+      - name: city
+        description: Seller city, lowercase without accents.
+      - name: state
+        description: Seller state code.
+      - name: lat
+        description: Latitude of the zip prefix centroid.
+      - name: lng
+        description: Longitude of the zip prefix centroid.
+
+  - name: dim_products
+    description: One row per product with category and physical attributes.
+    columns:
+      - name: product_id
+        description: Primary key.
+        data_tests: [unique, not_null]
+      - name: category_name
+        description: English category name (73 categories). 'unknown' when the source had none.
+        data_tests: [not_null]
+      - name: category_name_pt
+        description: Original Portuguese category name.
+      - name: product_name_length
+        description: Number of characters in the product name.
+      - name: product_description_length
+        description: Number of characters in the product description.
+      - name: product_photos_qty
+        description: Number of product photos published.
+      - name: product_weight_g
+        description: Weight in grams.
+      - name: product_length_cm
+        description: Length in cm.
+      - name: product_height_cm
+        description: Height in cm.
+      - name: product_width_cm
+        description: Width in cm.
+      - name: product_volume_cm3
+        description: length x height x width in cubic cm.
+
+  - name: dim_date
+    description: Calendar dimension, one row per day from 2016-01-01 to 2018-12-31.
+    columns:
+      - name: date_day
+        description: Primary key. Calendar date.
+        data_tests: [unique, not_null]
+      - name: year
+        description: Calendar year.
+      - name: quarter
+        description: Calendar quarter 1-4.
+      - name: month
+        description: Month number 1-12.
+      - name: year_month
+        description: Month as 'YYYY-MM' text, handy for grouping.
+      - name: month_name
+        description: Month name, e.g. January.
+      - name: iso_week
+        description: ISO week number.
+      - name: iso_day_of_week
+        description: 1 = Monday ... 7 = Sunday.
+      - name: day_name
+        description: Day name, e.g. Monday.
+      - name: is_weekend
+        description: True for Saturday and Sunday.

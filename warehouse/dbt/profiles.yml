@@ -1,0 +1,9 @@
+warehouse_gpt:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('WGPT_WAREHOUSE_PATH', '../../data/warehouse.duckdb') }}"
+      threads: 4
+      extensions:
+        - delta
