@@ -7,7 +7,6 @@ import subprocess
 import sys
 import time
 
-import structlog
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -18,16 +17,19 @@ app = typer.Typer(no_args_is_help=True, help="WarehouseGPT: analytics agent over
 data_app = typer.Typer(no_args_is_help=True, help="Build the lakehouse: raw -> bronze -> silver -> dbt.")
 context_app = typer.Typer(no_args_is_help=True, help="Semantic layer, profiling and metadata index.")
 app.add_typer(data_app, name="data")
+eval_app = typer.Typer(no_args_is_help=True, help="Golden-set evals: ablation ladder and model leaderboard.")
 app.add_typer(context_app, name="context")
+app.add_typer(eval_app, name="eval")
 console = Console()
 
 
 @app.callback()
 def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="Debug logging.")) -> None:
-    import logging
+    from warehouse_gpt.observability import configure_logging, init_tracing
 
-    level = logging.DEBUG if verbose else logging.WARNING
-    structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(level))
+    settings = get_settings()
+    configure_logging("DEBUG" if verbose else settings.log_level, settings.log_json)
+    init_tracing(settings)
 
 
 def _print_counts(title: str, counts: dict[str, int]) -> None:
@@ -147,6 +149,29 @@ def models() -> None:
     console.print(table)
 
 
+@app.command("serve")
+def serve(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    reload: bool = typer.Option(False, help="Auto-reload on code changes (dev)."),
+) -> None:
+    """Run the HTTP API (FastAPI + uvicorn)."""
+    import uvicorn
+
+    uvicorn.run("warehouse_gpt.api.app:create_app", factory=True, host=host, port=port, reload=reload)
+
+
+@app.command("ui")
+def ui(port: int = 8501) -> None:
+    """Run the Streamlit chat UI (expects the API from `wgpt serve`)."""
+    from warehouse_gpt.config import PROJECT_ROOT
+
+    app_path = PROJECT_ROOT / "ui" / "app.py"
+    raise typer.Exit(
+        subprocess.call([sys.executable, "-m", "streamlit", "run", str(app_path), "--server.port", str(port)])
+    )
+
+
 @app.command("ask")
 def ask(
     question: str,
@@ -201,6 +226,75 @@ def ask(
         f"llm tokens {r.prompt_tokens:,} in / {r.completion_tokens:,} out · "
         f"llm {r.llm_latency_s}s · total {r.total_s}s[/]"
     )
+
+
+@eval_app.command("run")
+def eval_run(
+    model: str = typer.Option(None, "--model", "-m", help="Model alias (see `wgpt models`)."),
+    rungs: str = typer.Option(None, help="Comma-separated rungs (default: 1-5 golden, 5 redteam)."),
+    ids: str = typer.Option(None, help="Comma-separated question ids (default: all)."),
+    limit: int = typer.Option(None, help="Only the first N questions."),
+    suite: str = typer.Option("golden", help="golden (accuracy) or redteam (attacks)."),
+    cached_only: bool = typer.Option(
+        False, help="Score only responses already in the cache (no API calls); rebuilds partial runs."
+    ),
+) -> None:
+    """Run an eval suite through the agent and score it. Re-runs are served from the response cache."""
+    from warehouse_gpt.agent.graph import Agent
+    from warehouse_gpt.evals import runner
+
+    settings = get_settings()
+    model = model or settings.default_model
+    if suite not in ("golden", "redteam"):
+        raise typer.BadParameter("suite must be golden or redteam")
+    suite_path = settings.golden_path if suite == "golden" else settings.redteam_path
+    results_dir = settings.eval_results_dir if suite == "golden" else settings.eval_results_dir / "redteam"
+    rung_ids = [int(r) for r in (rungs or ("1,2,3,4,5" if suite == "golden" else "5")).split(",")]
+    questions = runner.load_golden(suite_path)
+    if ids:
+        wanted = set(ids.split(","))
+        questions = [q for q in questions if q.id in wanted]
+    questions = questions[:limit] if limit else questions
+
+    from warehouse_gpt.agent.llm import LLMClient
+
+    agent = Agent.from_settings(llm=LLMClient(settings, mode="replay") if cached_only else None)
+    gold = runner.gold_results(questions, agent.executor)
+    meta = runner.new_meta(model, rung_ids, suite_path, len(questions))
+    items: list[runner.ItemResult] = []
+
+    def progress(item: runner.ItemResult) -> None:
+        items.append(item)
+        mark = "[green]✓[/]" if item.correct else "[red]✗[/]"
+        console.print(
+            f"R{item.rung} {mark} {item.id:34} {item.status:9} att={item.attempts} "
+            f"{item.llm_latency_s:5.1f}s  [dim]{'' if item.correct else item.reason[:70]}[/]"
+        )
+
+    try:
+        runner.run_eval(agent, questions, model, rung_ids, gold, on_item=progress, skip_uncached=cached_only)
+        expected = len(questions) * len(rung_ids)
+        meta.complete = len(items) == expected
+        if not meta.complete:
+            console.print(f"[yellow]partial run: {len(items)}/{expected} items scored[/]")
+    finally:
+        from datetime import UTC, datetime
+
+        meta.finished_at = datetime.now(UTC).isoformat(timespec="seconds")
+        path = runner.save_results(results_dir, meta, items)
+        console.print(f"[green]saved {len(items)} results to[/] {path}")
+    eval_report()
+
+
+@eval_app.command("report")
+def eval_report(primary: str = typer.Option(None, help="Model to show the full ladder for.")) -> None:
+    """Rebuild evals/REPORT.md from all saved results."""
+    from warehouse_gpt.evals.report import build_report
+
+    settings = get_settings()
+    text = build_report(settings.eval_results_dir, primary)
+    settings.eval_report_path.write_text(text, encoding="utf-8")
+    console.print(f"[green]report written to[/] {settings.eval_report_path}")
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ from typing import Any, Literal
 
 import structlog
 
+from warehouse_gpt import observability as obs
 from warehouse_gpt.config import Settings, get_settings
 
 log = structlog.get_logger(__name__)
@@ -242,7 +243,25 @@ class LLMClient:
         if spec.temperature:
             params["temperature"] = 0
         key = self.store.key(spec.litellm_model, messages, params)
+        with obs.span("llm", obs.LLM, **obs.llm_attributes(spec.litellm_model, messages, params)) as sp:
+            response = self._complete(spec, messages, params, key)
+            obs.set_output(
+                sp,
+                response.text,
+                **{
+                    "llm.output_messages.0.message.role": "assistant",
+                    "llm.output_messages.0.message.content": response.text,
+                    "llm.token_count.prompt": response.prompt_tokens,
+                    "llm.token_count.completion": response.completion_tokens,
+                    "llm.token_count.total": response.prompt_tokens + response.completion_tokens,
+                    "wgpt.cached": response.cached,
+                },
+            )
+        return response
 
+    def _complete(
+        self, spec: ModelSpec, messages: list[Message], params: dict[str, Any], key: str
+    ) -> LLMResponse:
         if self.mode in ("cache", "replay") and (hit := self.store.get(key)):
             self._record(spec, hit)
             return hit
@@ -294,6 +313,7 @@ class LLMClient:
                     model=spec.alias,
                     attempt=attempt,
                     error=type(exc).__name__,
+                    detail=_detail(exc),
                     sleep_s=round(delay, 1),
                 )
                 time.sleep(delay)
@@ -322,6 +342,13 @@ class LLMClient:
             prompt_tokens=response.prompt_tokens,
             completion_tokens=response.completion_tokens,
         )
+
+
+def _detail(exc: Exception) -> str:
+    """The provider's own message (e.g. which limit was hit), trimmed for logs."""
+    text = str(exc)
+    m = re.search(r'"message":\s*"([^"]+)', text) or re.search(r"(Rate limit reached[^.]*\.[^.]*\.)", text)
+    return (m.group(1) if m else text)[:300]
 
 
 def _retry_after(exc: Exception) -> float | None:

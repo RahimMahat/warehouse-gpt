@@ -50,6 +50,25 @@ class Settings(BaseSettings):
     query_timeout_s: float = 30.0
     max_result_rows: int = 1000
 
+    # Observability
+    tracing: bool = False
+    otlp_endpoint: str = "http://localhost:6006/v1/traces"  # Arize Phoenix default
+    log_level: str = "WARNING"
+    log_json: bool = False
+
+    # API / UI
+    api_token: SecretStr | None = None  # when set, requests need "Authorization: Bearer <token>"
+    api_rate_limit_per_min: int = 20  # per client
+    answer_cache_ttl_s: int = 600
+    answer_cache_size: int = 256
+    api_url: str = "http://localhost:8000"  # used by the Streamlit UI
+
+    # Evals
+    golden_path: Path = PROJECT_ROOT / "evals" / "golden.yml"
+    redteam_path: Path = PROJECT_ROOT / "evals" / "redteam.yml"
+    eval_results_dir: Path = PROJECT_ROOT / "evals" / "results"
+    eval_report_path: Path = PROJECT_ROOT / "evals" / "REPORT.md"
+
     @property
     def manifest_path(self) -> Path:
         return self.dbt_dir / "target" / "manifest.json"

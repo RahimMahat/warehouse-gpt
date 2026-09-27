@@ -16,3 +16,6 @@ warehouse/dbt/.user.yml
 
 # graphify knowledge graph (local dev tooling)
 graphify-out/
+
+# Spark 4 artifact manager scratch dirs
+artifacts/

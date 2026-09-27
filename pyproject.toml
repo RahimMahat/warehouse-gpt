@@ -11,19 +11,29 @@ dependencies = [
     "dbt-duckdb>=1.11.0",
     "delta-spark>=4.0,<4.1",
     "duckdb>=1.5.5",
+    "fastapi>=0.120",
     "fastembed>=0.8.1",
+    "httpx>=0.28",
     "kagglehub>=1.0.2",
     "lancedb>=0.39.0",
     "langgraph>=1.2.12",
     "litellm>=1.102.1",
+    "opentelemetry-exporter-otlp-proto-http>=1.30",
+    "opentelemetry-sdk>=1.30",
     "pydantic-settings>=2.15.0",
     "pyspark>=4.0.1,<4.1",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",
     "sqlglot>=30.19.0",
+    "streamlit>=1.50",
     "structlog>=26.1.0",
     "typer>=0.27.2",
+    "uvicorn[standard]>=0.35",
 ]
+
+[project.optional-dependencies]
+# Local trace UI: `uv run --extra phoenix phoenix serve`, then set WGPT_TRACING=true
+phoenix = ["arize-phoenix>=12"]
 
 [project.scripts]
 wgpt = "warehouse_gpt.cli:app"

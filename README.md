@@ -15,10 +15,10 @@ Everything runs at **$0**: local Spark, DuckDB, free-tier LLM APIs or local Olla
 | 1. Data foundation: Spark bronze/silver (Delta Lake), DQ framework, dbt gold layer | ✅ done |
 | 2. Semantic layer + metadata index | ✅ done |
 | 3. Agent MVP: LangGraph pipeline, LiteLLM router, sqlglot guard, sandboxed DuckDB, CLI | ✅ done |
-| 4. Eval harness: ablation ladder + model leaderboard | ⏳ next |
-| 5. Hardening: self-correction, guardrails, cassettes, tracing | |
-| 6. FastAPI + Streamlit UI | |
-| 7. CI, Docker, Hugging Face Spaces deploy | |
+| 4. Eval harness: golden set, comparator, ablation ladder, leaderboard | ✅ done (partial results, see below) |
+| 5. Hardening: self-correction, guard, cassettes, tracing, logging, answer cache, red-team suite | ✅ built (red-team run pending) |
+| 6. FastAPI (JSON + SSE) + Streamlit UI | ✅ done |
+| 7. CI, Docker, Hugging Face Spaces deploy | ⏳ next |
 
 ## Architecture (data layer)
 
@@ -94,6 +94,52 @@ uv run wgpt ask "How many customers do we have?" --level 1 --max-repairs 0 --tra
   - `replay` runs the end-to-end tests from committed cassettes, with no network and no keys.
 
 See [ADR-004](docs/adr/004-agent-architecture.md).
+
+## Results
+
+Execution accuracy on 52 answerable golden questions. The set is disjoint from the examples the agent retrieves, and a test enforces that. Full report: [`evals/REPORT.md`](evals/REPORT.md).
+
+| Model (Groq free tier) | R1 raw DDL | R2 + dbt docs | R4 full context (docs + semantic layer + examples) |
+|---|---|---|---|
+| `gpt-oss-120b` | 63.5% | **82.7%** | *pending* |
+| `qwen3-27b` | 73.1% | **82.7%** | *pending* |
+| `gpt-oss-20b` | 63.5% | – | **98.0%** (50/51) |
+
+- **Documentation alone is worth about 10–19 points.** Adding dbt descriptions, keys and accepted values fixed 11 questions and broke 1 on `gpt-oss-120b`.
+- **Full context takes a small model from 63.5% to 98%.** `gpt-oss-20b` with the semantic layer and retrieved examples beats both larger models running on docs alone.
+- **The remaining R2 errors are mostly definitional.** 7 of `gpt-oss-120b`'s 9 R2 failures used `order_value` (freight included) as "revenue". Only the governed metric definitions at R3 encode that rule.
+- **Honest intervals.** With n=52 the 95% CIs are ±10–14 points, and the report shows them for every cell. Refusal questions (6) are scored separately.
+
+> **Why some cells are pending:** Groq's free tier has an undocumented cap of **200K tokens per model per rolling 24h**. It isn't in the rate-limit headers; I found it by forcing a refusal. The ~5K-token R3/R4 prompts exhausted it mid-run. Runs are resumable from the response cache at zero cost, and the report excludes partial rungs rather than estimating them (`MIN_COVERAGE`).
+
+**Auditing the eval, not just the model.** Every failure was inspected before the numbers were published. This found two comparator false negatives: `1.60` arriving as the float `1.6`, and an extra `NULL` group row. It also found one genuinely ambiguous question, now scored with an accepted alternative reference (`alt_sql`). Each fix has a regression test.
+
+## API, UI and tracing
+
+```bash
+uv run wgpt serve                    # FastAPI on :8000  (OpenAPI docs at /docs)
+uv run wgpt ui                       # Streamlit chat on :8501, talks to the API over SSE
+uv run --extra phoenix phoenix serve # optional: Arize Phoenix trace UI on :6006
+WGPT_TRACING=true uv run wgpt serve  # ...and send traces to it
+```
+
+| Endpoint | |
+|---|---|
+| `POST /ask` | Full answer as JSON: rows, answer, SQL, Vega-Lite chart spec, token usage, per-node trace |
+| `POST /ask/stream` | Server-Sent Events: one `step` event per agent node (SQL shows up as soon as it is written), then `final` |
+| `GET /models`, `GET /metrics`, `GET /health` | Model aliases and free-tier limits, governed metrics, cache stats |
+
+- **Protections:**
+  - Optional bearer token (`WGPT_API_TOKEN`).
+  - A per-client sliding-window rate limit that returns 429 with `Retry-After`.
+  - Input validation.
+  - A model allowlist, so clients can't point the server at arbitrary providers.
+- **Answer cache:** exact normalized-question match with LRU + TTL. It is deliberately *not* a semantic cache: "revenue in 2017" and "revenue in 2018" embed almost identically, and reusing one for the other would be a silent wrong answer.
+- **Observability:**
+  - OpenTelemetry spans follow OpenInference conventions (AGENT → RETRIEVER / CHAIN / GUARDRAIL / TOOL / LLM with messages and token counts), so Phoenix renders the full tree.
+  - JSON logs carry a request id from the HTTP middleware into the agent's worker thread.
+  - Tracing costs nothing when off.
+- **Streaming design:** the graph runs on a worker thread and hands events over a queue, so a run and its trace stay on one thread even though the ASGI server iterates the response from a thread pool.
 
 ## Quickstart
 

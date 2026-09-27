@@ -10,13 +10,19 @@ ladder. A CANNOT_ANSWER reply ends the run as a refusal.
 
 from __future__ import annotations
 
+import contextvars
 import operator
+import queue
+import threading
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, TypedDict, cast
 
+import structlog
 from langgraph.graph import END, START, StateGraph
 
+from warehouse_gpt import observability as obs
 from warehouse_gpt.agent import prompts
 from warehouse_gpt.agent.executor import QueryExecutor, QueryResult
 from warehouse_gpt.agent.guard import SQLGuard
@@ -24,6 +30,17 @@ from warehouse_gpt.agent.llm import LLMClient, LLMResponse, Message
 from warehouse_gpt.context.render import ContextLevel, ContextRenderer, RenderedContext
 
 Status = Literal["answered", "refused", "failed"]
+log = structlog.get_logger(__name__)
+
+# OpenInference span kind per node, so trace UIs render each step appropriately.
+NODE_KINDS = {
+    "context": obs.RETRIEVER,
+    "generate": obs.CHAIN,
+    "validate": obs.GUARDRAIL,
+    "execute": obs.TOOL,
+    "repair": obs.CHAIN,
+    "answer": obs.CHAIN,
+}
 
 
 class AgentState(TypedDict, total=False):
@@ -66,6 +83,7 @@ class AgentResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     llm_latency_s: float = 0.0
+    cached_calls: int = 0
     total_s: float = 0.0
     tables: list[str] = field(default_factory=list)
 
@@ -261,7 +279,7 @@ class Agent:
             "answer": self._answer,
         }
         for name, fn in nodes.items():
-            g.add_node(name, fn)  # type: ignore[call-overload]  # langgraph's overloads reject bound methods
+            g.add_node(name, self._traced(name, fn))  # type: ignore[call-overload]  # overloads reject callables
         g.add_edge(START, "context")
         g.add_edge("context", "generate")
         g.add_conditional_edges("generate", self._after_generate, ["validate", "repair", END])
@@ -270,6 +288,30 @@ class Agent:
         g.add_edge("repair", "generate")
         g.add_edge("answer", END)
         return g
+
+    def _traced(
+        self, name: str, fn: Callable[[AgentState], AgentState]
+    ) -> Callable[[AgentState], AgentState]:
+        """Wrap a node in a span carrying its inputs, outputs and trace details."""
+
+        def run(s: AgentState) -> AgentState:
+            node_input = s.get("sql") if name in ("validate", "execute") else s.get("question")
+            with obs.span(name, NODE_KINDS[name], input=node_input) as sp:
+                update = fn(s)
+                step = (update.get("trace") or [{}])[-1]
+                details = {f"wgpt.{k}": v for k, v in step.items() if k != "node"}
+                if name == "context":
+                    for i, ex_id in enumerate(update["context"].example_ids):
+                        details[f"retrieval.documents.{i}.document.id"] = ex_id
+                result = update.get("result")
+                if name == "execute" and result is not None:
+                    output: Any = result.to_markdown(10)
+                else:
+                    output = update.get("answer") or update.get("sql") or update.get("refusal")
+                obs.set_output(sp, output, **details)
+                return update
+
+        return run
 
     # -- public ---------------------------------------------------------------------------
     def ask(
@@ -280,24 +322,100 @@ class Agent:
         max_repairs: int | None = None,
         answer: bool = True,
     ) -> AgentResponse:
+        return self._run(question, level, model, max_repairs, answer)
+
+    def stream(
+        self,
+        question: str,
+        level: ContextLevel = ContextLevel.EXAMPLES,
+        model: str | None = None,
+        max_repairs: int | None = None,
+        answer: bool = True,
+    ) -> Iterator[tuple[str, Any]]:
+        """Yield ``("step", dict)`` as each node finishes, then ``("final", AgentResponse)``.
+
+        The graph runs on a worker thread and hands events over a queue, so the whole run (and its
+        trace span) stays in one thread even when the consumer iterates from several, as ASGI
+        servers do with sync generators. Logging context (request ids) is copied to the worker.
+        """
+        events: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+        def work() -> None:
+            try:
+                resp = self._run(question, level, model, max_repairs, answer, emit=events.put)
+                events.put(("final", resp))
+            except Exception as exc:  # surfaced to the consumer below
+                events.put(("error", exc))
+
+        ctx = contextvars.copy_context()
+        threading.Thread(target=ctx.run, args=(work,), daemon=True, name="agent-run").start()
+        while True:
+            kind, payload = events.get()
+            if kind == "error":
+                raise payload
+            yield kind, payload
+            if kind == "final":
+                return
+
+    def _run(
+        self,
+        question: str,
+        level: ContextLevel,
+        model: str | None,
+        max_repairs: int | None,
+        answer: bool,
+        emit: Callable[[tuple[str, Any]], None] | None = None,
+    ) -> AgentResponse:
         t0 = time.perf_counter()
         model = model or self.default_model
-        s = cast(
-            AgentState,
-            self.graph.invoke(
-                {
-                    "question": question,
-                    "level": ContextLevel(level),
-                    "model": model,
-                    "max_repairs": self.default_max_repairs if max_repairs is None else max_repairs,
-                    "want_answer": answer,
-                    "llm_calls": [],
-                    "trace": [],
+        level = ContextLevel(level)
+        repairs = self.default_max_repairs if max_repairs is None else max_repairs
+        inputs: AgentState = {
+            "question": question,
+            "level": level,
+            "model": model,
+            "max_repairs": repairs,
+            "want_answer": answer,
+            "llm_calls": [],
+            "trace": [],
+        }
+        attrs = {"wgpt.level": level.name, "wgpt.model": model, "wgpt.max_repairs": repairs}
+        with obs.span("agent", obs.AGENT, input=question, **attrs) as sp:
+            final: dict[str, Any] = {}
+            for mode, chunk in self.graph.stream(
+                inputs, {"recursion_limit": 50}, stream_mode=["updates", "values"]
+            ):
+                chunk = cast(dict[str, Any], chunk)
+                if mode == "values":
+                    final = chunk
+                elif emit is not None:
+                    for update in chunk.values():
+                        if update and update.get("trace"):
+                            emit(("step", {**update["trace"][-1], "sql": update.get("sql")}))
+            response = self._response(cast(AgentState, final), model, time.perf_counter() - t0)
+            obs.set_output(
+                sp,
+                response.answer or response.sql or response.refusal or response.error,
+                **{
+                    "wgpt.status": response.status,
+                    "wgpt.attempts": response.attempts,
+                    "llm.token_count.prompt": response.prompt_tokens,
+                    "llm.token_count.completion": response.completion_tokens,
                 },
-                {"recursion_limit": 50},
-            ),
+            )
+        log.info(
+            "agent.completed",
+            status=response.status,
+            model=model,
+            context_level=level.name,
+            attempts=response.attempts,
+            rows=response.result.row_count if response.result else None,
+            prompt_tokens=response.prompt_tokens,
+            completion_tokens=response.completion_tokens,
+            cached_calls=response.cached_calls,
+            total_s=response.total_s,
         )
-        return self._response(s, model, time.perf_counter() - t0)
+        return response
 
     def _response(self, s: AgentState, model: str, elapsed: float) -> AgentResponse:
         result = s.get("result")
@@ -334,7 +452,8 @@ class Agent:
             trace=s["trace"],
             prompt_tokens=sum(c.prompt_tokens for c in calls),
             completion_tokens=sum(c.completion_tokens for c in calls),
-            llm_latency_s=round(sum(c.latency_s for c in calls if not c.cached), 2),
+            llm_latency_s=round(sum(c.latency_s for c in calls), 2),  # recorded latency, even if cached
+            cached_calls=sum(c.cached for c in calls),
             total_s=round(elapsed, 2),
             tables=guard_tables,
         )
