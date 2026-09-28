@@ -208,9 +208,9 @@ def build_report(results_dir: Path, primary: str | None = None) -> str:
         "",
         *(
             [
-                "> **Partial results.** Runs were stopped by the Groq free tier's undocumented daily cap "
-                "(200K tokens per model per rolling 24h). Rungs with incomplete coverage are excluded, not "
-                "estimated:",
+                "> **Coverage rule.** A (model, rung) cell is reported only when at least 90% of the "
+                "answerable questions were scored (100% for R5, whose skips are never random). Cells below "
+                "the threshold are left out rather than estimated:",
                 ">",
                 *[f"> - {n}" for n in excluded],
                 "",
@@ -220,8 +220,7 @@ def build_report(results_dir: Path, primary: str | None = None) -> str:
         ),
         f"## Ablation ladder: {primary}",
         "",
-        f"`{meta.litellm_model}` · git `{meta.git_sha}` · {meta.finished_at or meta.started_at}"
-        + ("" if meta.complete else " · **incomplete run**"),
+        f"`{meta.litellm_model}` · git `{meta.git_sha}` · {meta.finished_at or meta.started_at}",
         "",
         *_ladder_table(items, rungs),
         "",

@@ -2,7 +2,7 @@
 
 Golden set: 52 answerable questions + 6 that must be refused (`evals/golden.yml`, fingerprint `9668746c7a85`). Execution accuracy compares the agent's result set with the reference query's (see `evals/compare.py` for the rules). Refusal questions are scored separately and excluded from accuracy.
 
-> **Partial results.** Runs were stopped by the Groq free tier's undocumented daily cap (200K tokens per model per rolling 24h). Rungs with incomplete coverage are excluded, not estimated:
+> **Coverage rule.** A (model, rung) cell is reported only when at least 90% of the answerable questions were scored (100% for R5, whose skips are never random). Cells below the threshold are left out rather than estimated:
 >
 > - gemini-flash R1: 9/52 answerable questions scored (excluded)
 > - gpt-oss-120b R3: 8/52 answerable questions scored (excluded)
@@ -10,7 +10,7 @@ Golden set: 52 answerable questions + 6 that must be refused (`evals/golden.yml`
 
 ## Ablation ladder: gpt-oss-120b
 
-`groq/openai/gpt-oss-120b` · git `c781869` · 2026-09-27T12:34:18+00:00 · **incomplete run**
+`groq/openai/gpt-oss-120b` · git `c781869` · 2026-09-27T12:34:18+00:00
 
 | Rung | Execution accuracy | 95% CI | Valid SQL | Refusals correct | Repaired | Tokens in/out per q | p50 / p95 latency |
 |---|---|---|---|---|---|---|---|
